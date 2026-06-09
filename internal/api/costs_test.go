@@ -249,7 +249,7 @@ func TestGetWastageSummary(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, items, 2)
 	require.Equal(t, "idle-vms", items[0].Category)
-	require.InDelta(t, 1200.0, items[0].Savings, 0.01)
+	require.InDelta(t, 1200.0, items[0].EstimatedSavings, 0.01)
 }
 
 // TestListCosts_Pagination verifies query params are forwarded.

@@ -13,15 +13,8 @@ type DashboardStats struct {
 	Raw        map[string]any
 }
 
-// AlertStats holds counts from the alertStats block.
-type AlertStats struct {
-	Firing     int            `json:"firing"`
-	Ack        int            `json:"ack"`
-	Resolved   int            `json:"resolved"`
-	BySeverity map[string]int `json:"by_severity"`
-}
-
 // ActiveAlertItem is one entry from GET /api/v1/alerts/active.
+// (AlertStats is defined in alerts.go; WastageSummaryItem in wastage.go)
 type ActiveAlertItem struct {
 	ID          string  `json:"id"`
 	Status      string  `json:"status"`
@@ -32,13 +25,6 @@ type ActiveAlertItem struct {
 	CostImpact  float64 `json:"cost_impact"`
 	Provider    string  `json:"provider"`
 	TriggeredAt string  `json:"triggered_at"`
-}
-
-// WastageSummaryItem is one entry from GET /api/v1/wastage/summary.
-type WastageSummaryItem struct {
-	Category string  `json:"category"`
-	Savings  float64 `json:"estimated_savings"`
-	Count    int     `json:"count"`
 }
 
 // GetDashboardStats calls GET /api/v1/dashboard/stats.
@@ -73,7 +59,7 @@ func (c *Client) GetWastageSummary(ctx context.Context) ([]WastageSummaryItem, e
 	if err := c.GetJSON(ctx, "/api/v1/wastage/summary", &raw); err != nil {
 		return nil, err
 	}
-	return parseWastageSummary(raw), nil
+	return parseWastageSummaryDashboard(raw), nil
 }
 
 // ---- parsing ----------------------------------------------------------------
@@ -90,6 +76,15 @@ func parseDashboardStats(raw map[string]any) *DashboardStats {
 		d.AlertStats = parseAlertStats(v)
 	}
 	return d
+}
+
+// AlertStats holds counts from the alertStats block.
+// AlertStatsResponse (in alerts.go) embeds this type.
+type AlertStats struct {
+	Firing     int            `json:"firing"`
+	Ack        int            `json:"ack"`
+	Resolved   int            `json:"resolved"`
+	BySeverity map[string]int `json:"by_severity"`
 }
 
 func parseAlertStats(m map[string]any) AlertStats {
@@ -146,23 +141,21 @@ func parseActiveAlerts(raw map[string]any) []ActiveAlertItem {
 	return out
 }
 
-func parseWastageSummary(raw map[string]any) []WastageSummaryItem {
-	// Server returns {"summary": [...]} or {"categories": [...]} or root map of category→savings.
+func parseWastageSummaryDashboard(raw map[string]any) []WastageSummaryItem {
 	for _, key := range []string{"summary", "categories", "data"} {
 		if v, ok := raw[key].([]any); ok {
-			return parseWastageList(v)
+			return parseWastageItemList(v)
 		}
 	}
-	// Fall back: interpret root keys as category→savings.
 	var out []WastageSummaryItem
 	for k, v := range raw {
 		switch val := v.(type) {
 		case float64:
-			out = append(out, WastageSummaryItem{Category: k, Savings: val})
+			out = append(out, WastageSummaryItem{Category: k, EstimatedSavings: val})
 		case map[string]any:
 			item := WastageSummaryItem{Category: k}
 			if f, ok := val["estimated_savings"].(float64); ok {
-				item.Savings = f
+				item.EstimatedSavings = f
 			}
 			if f, ok := val["count"].(float64); ok {
 				item.Count = int(f)
@@ -173,7 +166,7 @@ func parseWastageSummary(raw map[string]any) []WastageSummaryItem {
 	return out
 }
 
-func parseWastageList(arr []any) []WastageSummaryItem {
+func parseWastageItemList(arr []any) []WastageSummaryItem {
 	out := make([]WastageSummaryItem, 0, len(arr))
 	for _, item := range arr {
 		m, ok := item.(map[string]any)
@@ -183,7 +176,7 @@ func parseWastageList(arr []any) []WastageSummaryItem {
 		w := WastageSummaryItem{}
 		strField(m, "category", &w.Category)
 		if f, ok := m["estimated_savings"].(float64); ok {
-			w.Savings = f
+			w.EstimatedSavings = f
 		}
 		if f, ok := m["count"].(float64); ok {
 			w.Count = int(f)

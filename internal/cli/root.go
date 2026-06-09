@@ -16,11 +16,13 @@ import (
 
 // GlobalFlags holds values bound to root-level persistent flags.
 type GlobalFlags struct {
-	Context string
-	Server  string
-	Output  string
-	NoColor bool
-	Debug   bool
+	Context  string
+	Server   string
+	Output   string
+	NoColor  bool
+	Debug    bool
+	Quiet    bool
+	NoInput  bool
 }
 
 // AppState is built once during PersistentPreRun and made available to all
@@ -57,11 +59,13 @@ func NewRootCmd() *cobra.Command {
 
 	root.PersistentFlags().StringVar(&gFlags.Context, "context", "", "named context to use (overrides current_context)")
 	root.PersistentFlags().StringVar(&gFlags.Server, "server", "", "backend base URL (overrides context.server)")
-	root.PersistentFlags().StringVarP(&gFlags.Output, "output", "o", "", "output format: table|json|yaml|csv")
+	root.PersistentFlags().StringVarP(&gFlags.Output, "output", "o", "", "output format: table|json|yaml|csv|wide")
 	root.PersistentFlags().BoolVar(&gFlags.NoColor, "no-color", false, "disable ANSI colors")
 	root.PersistentFlags().BoolVar(&gFlags.Debug, "debug", false, "print request/response traces to stderr")
+	root.PersistentFlags().BoolVarP(&gFlags.Quiet, "quiet", "q", false, "suppress informational output (errors still shown)")
+	root.PersistentFlags().BoolVar(&gFlags.NoInput, "no-input", false, "disable interactive prompts; fail instead of asking (CI-safe)")
 
-	root.AddCommand(newVersionCmd())
+	root.AddCommand(newDiagVersionCmd())
 	root.AddCommand(newContextCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newLoginCmd())
@@ -70,6 +74,17 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newConfigsCmd())
 	root.AddCommand(newProjectsCmd())
+	root.AddCommand(newExtractorsCmd())
+	root.AddCommand(newRunsCmd())
+	root.AddCommand(newCostsCmd())
+	root.AddCommand(newDashboardCmd())
+	root.AddCommand(newAlertsCmd())
+	root.AddCommand(newWastageCmd())
+	root.AddCommand(newPingCmd())
+	root.AddCommand(newDBStatsCmd())
+	root.AddCommand(newDebugCmd())
+	root.AddCommand(newCompletionCmd(root))
+	root.AddCommand(newManCmd(root))
 	return root
 }
 
@@ -77,12 +92,23 @@ func NewRootCmd() *cobra.Command {
 func Execute(ctx context.Context) int {
 	root := NewRootCmd()
 	if err := root.ExecuteContext(ctx); err != nil {
-		// 401 surfaces as a special exit code 1 with a friendly message.
 		var apiErr *finnaapi.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 401 {
-			fmt.Fprintf(os.Stderr, "session expired or not authenticated — run `finna login`\n")
+		if errors.As(err, &apiErr) {
+			switch apiErr.StatusCode {
+			case 401:
+				fmt.Fprintf(os.Stderr, "error: not authenticated — run `finna login`\n")
+			case 403:
+				fmt.Fprintf(os.Stderr, "error: permission denied\n")
+			case 404:
+				fmt.Fprintf(os.Stderr, "error: not found\n")
+			case 503:
+				fmt.Fprintf(os.Stderr, "error: service unavailable — check `finna ping`\n")
+			default:
+				fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+			}
 			return 1
 		}
+		// Never print a raw Go stack trace — just the message.
 		fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
 		return 1
 	}
@@ -125,11 +151,15 @@ func loadState(cmd *cobra.Command) error {
 // config (e.g. `finna version`, `finna --help`, `finna context add`).
 func skipConfigLoad(cmd *cobra.Command) bool {
 	switch cmd.Name() {
-	case "version", "help", "completion":
+	case "version", "help", "completion", "man":
 		return true
 	}
 	// `context add` is the bootstrap path; allow it even with no config.
 	if cmd.Parent() != nil && cmd.Parent().Name() == "context" && cmd.Name() == "add" {
+		return true
+	}
+	// `debug curl` needs no config — it just prints a string.
+	if cmd.Parent() != nil && cmd.Parent().Name() == "debug" && cmd.Name() == "curl" {
 		return true
 	}
 	return false
@@ -138,14 +168,22 @@ func skipConfigLoad(cmd *cobra.Command) bool {
 // isNetworkedCommand returns true for commands that communicate with the API.
 func isNetworkedCommand(cmd *cobra.Command) bool {
 	networkCmds := map[string]bool{
-		"login":    true,
-		"logout":   false, // local keyring only
-		"whoami":   false, // local JWT decode
-		"auth":     true,
-		"configs":  true,
-		"projects": true,
-		"costs":    true,
-		"runs":     true,
+		"login":      true,
+		"logout":     false, // local keyring only
+		"whoami":     false, // local JWT decode
+		"auth":       true,
+		"configs":    true,
+		"projects":   true,
+		"extractors": true,
+		"runs":       true,
+		"costs":      true,
+		"dashboard":  true,
+		"status":     true,
+		"alerts":     true,
+		"wastage":    true,
+		"ping":       true,
+		"db-stats":   true,
+		"version":    false, // version can be used locally; --server flag triggers its own call
 	}
 	name := cmd.Name()
 	if v, ok := networkCmds[name]; ok {

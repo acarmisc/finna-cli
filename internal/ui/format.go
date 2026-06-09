@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,46 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// OutputFormat is the user-visible output format selector.
+type OutputFormat string
+
+const (
+	FormatTable OutputFormat = "table"
+	FormatJSON  OutputFormat = "json"
+	FormatYAML  OutputFormat = "yaml"
+	FormatCSV   OutputFormat = "csv"
+	FormatWide  OutputFormat = "wide"
+)
+
+// ParseOutputFormat validates and normalises the string from --output / -o.
+func ParseOutputFormat(s string) (OutputFormat, error) {
+	switch OutputFormat(s) {
+	case FormatTable, FormatJSON, FormatYAML, FormatCSV, FormatWide:
+		return OutputFormat(s), nil
+	case "":
+		return FormatTable, nil
+	default:
+		return "", fmt.Errorf("unknown output format %q — valid values: table, json, yaml, csv, wide", s)
+	}
+}
+
+// CSVOutput writes headers and rows as RFC 4180 CSV to w.
+func CSVOutput(headers []string, rows [][]string, w io.Writer) error {
+	cw := csv.NewWriter(w)
+	if len(headers) > 0 {
+		if err := cw.Write(headers); err != nil {
+			return err
+		}
+	}
+	for _, row := range rows {
+		if err := cw.Write(row); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
 
 // FormatCurrency formats a float as a currency string.
 // currency is an ISO code like "USD" or "EUR"; defaults to USD if empty.

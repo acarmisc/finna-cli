@@ -1,7 +1,7 @@
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/acarmisc/finna-cli/internal/version.Version=$(VERSION)
 
-.PHONY: build test lint generate tidy clean
+.PHONY: build test lint generate tidy clean man
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o finna ./cmd/finna
@@ -18,6 +18,9 @@ generate:
 tidy:
 	go mod tidy
 
+man: build
+	./finna man
+
 clean:
 	rm -f finna coverage.out
-	rm -rf dist
+	rm -rf dist man

@@ -239,12 +239,12 @@ func writeDashboard(w io.Writer, data *dashboardData, noColor bool) (int, error)
 	} else {
 		totalSavings := 0.0
 		for _, w := range data.wastage {
-			totalSavings += w.Savings
+			totalSavings += w.EstimatedSavings
 		}
 		fmt.Fprintf(&sb, "  Potential savings: %s\n", ui.FormatCurrency(totalSavings, ""))
 		if len(data.wastage) > 0 {
 			top := data.wastage[0]
-			fmt.Fprintf(&sb, "  Top category: %s (%s savings)\n", top.Category, ui.FormatCurrency(top.Savings, ""))
+			fmt.Fprintf(&sb, "  Top category: %s (%s savings)\n", top.Category, ui.FormatCurrency(top.EstimatedSavings, ""))
 		}
 	}
 

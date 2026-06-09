@@ -117,7 +117,16 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader, he
 			}
 		}
 
-		c.tracef("--> %s %s (attempt %d)", method, url, attempt+1)
+		if c.debug && c.debugSink != nil {
+			fmt.Fprintf(c.debugSink, "[debug] --> %s %s\n", method, url)
+			for k, vals := range req.Header {
+				v := strings.Join(vals, ", ")
+				if strings.EqualFold(k, "Authorization") {
+					v = "Bearer ***"
+				}
+				fmt.Fprintf(c.debugSink, "[debug]     %s: %s\n", k, v)
+			}
+		}
 		resp, err := c.http.Do(req)
 		if err != nil {
 			lastErr = err
@@ -129,7 +138,9 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader, he
 			}
 			return nil, fmt.Errorf("http: %w", err)
 		}
-		c.tracef("<-- %d %s", resp.StatusCode, url)
+		if c.debug && c.debugSink != nil {
+			fmt.Fprintf(c.debugSink, "[debug] <-- %d %s\n", resp.StatusCode, url)
+		}
 
 		// Success.
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -193,6 +204,81 @@ func (c *Client) Health(ctx context.Context) (*HealthInfo, error) {
 		return &HealthInfo{}, nil
 	}
 	return &h, nil
+}
+
+// HealthzInfo is the minimal shape returned by /healthz.
+type HealthzInfo struct {
+	// The /healthz endpoint returns a free-form object; we capture the
+	// commonly-used fields and store the rest in Extra.
+	Status string         `json:"status"`
+	DB     string         `json:"db"`
+	Extra  map[string]any `json:"-"`
+}
+
+// Healthz queries /healthz (Kubernetes liveness probe style).
+func (c *Client) Healthz(ctx context.Context) (*HealthzInfo, error) {
+	resp, err := c.Do(ctx, http.MethodGet, "/healthz", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return &HealthzInfo{}, nil
+	}
+	h := &HealthzInfo{Extra: raw}
+	if v, ok := raw["status"].(string); ok {
+		h.Status = v
+	}
+	if v, ok := raw["db"].(string); ok {
+		h.DB = v
+	}
+	return h, nil
+}
+
+// DBStats queries /api/v1/db/stats and returns the raw map returned by the
+// server. The schema is open (additionalProperties) so we return map[string]any.
+func (c *Client) DBStats(ctx context.Context) (map[string]any, error) {
+	resp, err := c.Do(ctx, http.MethodGet, "/api/v1/db/stats", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return map[string]any{}, nil
+	}
+	return out, nil
+}
+
+// Page is the generic page envelope expected by FetchAll.
+// Implementations are expected to satisfy this by wrapping API responses.
+type Page[T any] struct {
+	Items   []T
+	HasNext bool
+}
+
+// FetchAll loops with limit+offset until the page is empty, collecting all
+// items. It is generic and relies on the caller-supplied fetch function.
+// limit controls the page size; use 0 to let the server decide.
+func FetchAll[T any](ctx context.Context, limit int, fetch func(ctx context.Context, offset, limit int) ([]T, error)) ([]T, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var all []T
+	offset := 0
+	for {
+		page, err := fetch(ctx, offset, limit)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < limit {
+			break
+		}
+		offset += limit
+	}
+	return all, nil
 }
 
 func (c *Client) sleepBackoff(ctx context.Context, attempt int) {
