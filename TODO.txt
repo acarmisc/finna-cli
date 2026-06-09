@@ -1,0 +1,257 @@
+================================================================================
+finna CLI — Implementation Plan
+================================================================================
+
+Goal: Go CLI `finna` for finna-app (FastAPI, deployed on GKE). Brew-installable.
+Rich terminal output (tables, spinners, colors). TOML config. No full TUI.
+
+Backend surface mapped from /Users/andrea/Projects/personal/finna-app/docs/openapi.yaml
+Auth: JWT via /api/v1/auth/token (password), /api/v1/auth/login (CLI alias),
+      GitHub OAuth, OIDC w/ PKCE, GCP/Azure service-account register.
+
+================================================================================
+PHASE 0 — Project Bootstrap
+================================================================================
+[ ] 0.1  go mod init github.com/<owner>/finna-cli; Go 1.23+
+[ ] 0.2  Layout:
+            cmd/finna/main.go
+            internal/cli/        (cobra commands)
+            internal/api/        (generated/handwritten client)
+            internal/config/     (TOML load/save, contexts)
+            internal/auth/       (token cache, keyring, OAuth flows)
+            internal/ui/         (tables, spinners, colors, prompts)
+            internal/version/
+[ ] 0.3  Deps:
+            spf13/cobra            command tree
+            spf13/viper OR pelletier/go-toml/v2   TOML config
+            charmbracelet/lipgloss styles
+            charmbracelet/huh      interactive prompts (login wizard, confirm)
+            jedib0t/go-pretty/v6   tables
+            briandowns/spinner     spinners
+            zalando/go-keyring     OS keychain (macOS Keychain / Secret Service)
+            deepmap/oapi-codegen   generate client from openapi.yaml
+            stretchr/testify       tests
+[ ] 0.4  Makefile: build, test, lint (golangci-lint), generate, release-dry
+[ ] 0.5  CI: GitHub Actions — lint+test on PR; goreleaser on tag
+[ ] 0.6  README skeleton + LICENSE
+
+================================================================================
+PHASE 1 — Config + Context Management
+================================================================================
+Config file: $XDG_CONFIG_HOME/finna/config.toml  (default ~/.config/finna/config.toml)
+Tokens: OS keyring (never on disk).
+
+[ ] 1.1  TOML schema:
+            current_context = "prod"
+            [contexts.prod]
+              server = "https://finna.<gke-domain>"
+              insecure = false
+              default_project = "..."
+            [contexts.local]
+              server = "http://localhost:8000"
+            [ui]
+              color = "auto"   # auto|always|never
+              output = "table" # table|json|yaml|csv
+[ ] 1.2  `finna context list|use|set|add|remove|current`  (kubectl-style)
+[ ] 1.3  `finna config get|set|view|path`
+[ ] 1.4  Global flags: --context, --server, --output (-o), --no-color, --debug
+[ ] 1.5  Env overrides: FINNA_SERVER, FINNA_TOKEN, FINNA_CONTEXT, FINNA_OUTPUT
+[ ] 1.6  First-run wizard: huh form → server URL → save context → suggest `finna login`
+
+================================================================================
+PHASE 2 — API Client
+================================================================================
+[ ] 2.1  Copy docs/openapi.yaml into ./api/openapi.yaml (vendored, pinned)
+[ ] 2.2  go:generate oapi-codegen → internal/api/client.gen.go (types + client)
+[ ] 2.3  Wrapper: internal/api/finna.go
+          - injects Bearer token from auth store
+          - injects User-Agent: finna-cli/<version>
+          - retries 5xx w/ backoff (max 3)
+          - structured error decode (FastAPI {"detail": ...})
+          - context.Context honored (Ctrl-C → cancel)
+[ ] 2.4  Pretty-print server validation errors (422) field-by-field
+[ ] 2.5  Detect server version mismatch via /api/v1/health; warn if major drift
+
+================================================================================
+PHASE 3 — Auth
+================================================================================
+Token store key: "finna-cli:<context-name>" in OS keyring.
+
+[ ] 3.1  `finna login`
+            - default: POST /api/v1/auth/login (username/password via huh prompt)
+            - --github : open browser → /api/v1/auth/github → poll callback
+                         (or display URL + ask user to paste code)
+            - --oidc <provider>: GET /api/v1/auth/oidc/providers → PKCE flow
+                         → launch local loopback http server for callback
+                         → POST /api/v1/auth/oidc/callback
+            - --token <jwt>: store provided JWT directly
+[ ] 3.2  `finna logout` (--all to wipe every context)
+[ ] 3.3  `finna whoami` (decode JWT claims; show user, exp, provider)
+[ ] 3.4  Auto-refresh: on 401, attempt re-login if refresh token present;
+         else exit w/ "run `finna login`"
+[ ] 3.5  `finna auth register gcp <file.json>`  → POST /api/v1/auth/gcp/register
+[ ] 3.6  `finna auth register azure`            → POST /api/v1/auth/azure/service-account
+[ ] 3.7  Admin OIDC provider mgmt:
+            finna auth providers list|get|create|update|delete|test
+
+================================================================================
+PHASE 4 — Cloud Credentials (Configs)
+================================================================================
+Endpoints: /api/v1/configs (CLI-compatible).
+
+[ ] 4.1  `finna configs list`             table: id, provider, name, status
+[ ] 4.2  `finna configs get <id>`         detail view; --output json/yaml
+[ ] 4.3  `finna configs create`           wizard (huh): provider → fields → save
+            flags also: --provider, --name, --from-file creds.json
+[ ] 4.4  `finna configs update <id>`      partial update via prompts/flags
+[ ] 4.5  `finna configs delete <id>`      confirm prompt (--yes to skip)
+[ ] 4.6  `finna configs test <id>`        POST /api/v1/config/{id}/test;
+                                          spinner → ok / failure detail
+[ ] 4.7  Secret input fields use huh.Input with EchoMode=Password
+
+================================================================================
+PHASE 5 — Projects
+================================================================================
+[ ] 5.1  `finna projects list`           table: slug, name, MTD cost, configs
+[ ] 5.2  `finna projects get <slug>`
+[ ] 5.3  `finna projects create`         wizard or flags (--slug, --name, ...)
+[ ] 5.4  `finna projects delete <slug>`  confirm
+[ ] 5.5  `finna projects use <slug>`     sets default_project in current context
+[ ] 5.6  Default project auto-injected into extractor/cost commands
+
+================================================================================
+PHASE 6 — Extractors
+================================================================================
+[ ] 6.1  `finna extractors list`                     registry table
+[ ] 6.2  `finna extractors get <id>`
+[ ] 6.3  `finna extractors register`                 wizard / --from-file yaml
+[ ] 6.4  `finna extractors delete <id>`              confirm
+[ ] 6.5  `finna extractors trigger <id> [--params k=v ...]`
+            POST /api/v1/extractors/run  → returns run_id
+            optional --wait : tail status until terminal
+[ ] 6.6  `finna runs list [--extractor id] [--status running|...]`
+[ ] 6.7  `finna runs get <run_id>`                   status + timings + params
+[ ] 6.8  `finna runs cancel <run_id>`                "suspend"
+[ ] 6.9  `finna runs logs <run_id> [--follow] [--tail N]`
+            stream via repeated GET or chunked endpoint; colorize by level
+[ ] 6.10 `finna runs watch [--extractor id]`         auto-refresh table (polling, ~3s)
+
+================================================================================
+PHASE 7 — Costs / Consumption Summaries
+================================================================================
+[ ] 7.1  `finna costs summary [--project p] [--since 30d] [--until today]`
+            GET /api/v1/costs/summary  → headline numbers + sparkline
+[ ] 7.2  `finna costs totals [--by provider]`        GET /costs/totals
+[ ] 7.3  `finna costs breakdown [--provider gcp] [--top 20]`
+            GET /costs/breakdown      → grouped table by SKU
+[ ] 7.4  `finna costs daily [--days 30]`             GET /costs/daily
+            ASCII bar chart + table; --chart to widen
+[ ] 7.5  `finna costs by-sku [--provider]`
+[ ] 7.6  `finna costs skus [--provider]`             distinct SKU list
+[ ] 7.7  `finna costs export --format csv [-o file.csv]`  /costs/export
+[ ] 7.8  `finna costs list [--filter ...] [--page]`  raw records, paginated
+
+Sparkline + ASCII bar chart helper in internal/ui/chart.go (pure Go, no deps).
+
+================================================================================
+PHASE 8 — Dashboard / Quick Status
+================================================================================
+[ ] 8.1  `finna dashboard`  (alias: `finna status`)
+            GET /api/v1/dashboard/stats + a couple cost/run calls in parallel.
+            One-screen overview:
+              - active extractors / running / failed last 24h
+              - MTD cost per provider w/ delta vs last month
+              - top 3 active alerts
+              - top 3 wastage findings by saving potential
+            --watch: refresh every N seconds (default 10)
+
+================================================================================
+PHASE 9 — Alerts
+================================================================================
+[ ] 9.1  `finna alerts list [--active]`
+[ ] 9.2  `finna alerts stats`
+[ ] 9.3  `finna alerts ack <id>`         POST /alerts/{id}/acknowledge
+[ ] 9.4  `finna alerts ack-all`          confirm
+
+================================================================================
+PHASE 10 — Wastage / FinOps
+================================================================================
+[ ] 10.1 `finna wastage summary`
+[ ] 10.2 `finna wastage findings list [--rule] [--status]`
+[ ] 10.3 `finna wastage findings get <id>`
+[ ] 10.4 `finna wastage findings ack|ignore|resolve <id>`
+[ ] 10.5 `finna wastage rules list`
+[ ] 10.6 `finna wastage scan [--wait]`   POST /wastage/scan; list via /wastage/scans
+
+================================================================================
+PHASE 11 — Diagnostics
+================================================================================
+[ ] 11.1 `finna ping`         /healthz + /api/v1/health (timing per hop)
+[ ] 11.2 `finna db-stats`     /api/v1/db/stats (admin)
+[ ] 11.3 `finna version`      cli version + server version + go runtime
+[ ] 11.4 `finna debug curl <op>`  prints equivalent curl for any operation
+[ ] 11.5 `--debug` global: dump request/response (secrets redacted)
+
+================================================================================
+PHASE 12 — UX Polish
+================================================================================
+[ ] 12.1 Color theme via lipgloss; respect NO_COLOR + --no-color + non-TTY
+[ ] 12.2 Spinners for any call > 200ms; hide if non-TTY
+[ ] 12.3 Output formats: -o table|json|yaml|csv|wide; consistent across cmds
+[ ] 12.4 Shell completion: `finna completion bash|zsh|fish|powershell`
+[ ] 12.5 Man pages via cobra/doc; ship in brew formula
+[ ] 12.6 Friendly errors: never raw stack; suggest fix ("did you mean...", "run finna login")
+[ ] 12.7 `--quiet` and `--no-input` (CI-safe; fail instead of prompt)
+[ ] 12.8 Pagination: `--limit`, `--all` (auto-page), `--page-size`
+
+================================================================================
+PHASE 13 — Tests
+================================================================================
+[ ] 13.1 Unit: config load/save, token store (with mock keyring)
+[ ] 13.2 API client: httptest server fixtures per endpoint group
+[ ] 13.3 Command-level: cobra in-process, golden-file output for table renders
+[ ] 13.4 OAuth flows: mock callback server, deterministic PKCE
+[ ] 13.5 E2E (optional, tag `integration`): hits local docker-compose finna-app
+[ ] 13.6 Coverage gate ≥70%
+
+================================================================================
+PHASE 14 — Release / Distribution (Brew)
+================================================================================
+[ ] 14.1 goreleaser.yaml:
+            builds: darwin amd64+arm64, linux amd64+arm64
+            archives: tar.gz; checksums; SBOM (syft)
+            sign w/ cosign (keyless OIDC via GitHub Actions)
+            homebrew tap: brews → repo `homebrew-finna`
+[ ] 14.2 Create tap repo `<owner>/homebrew-finna`; goreleaser pushes formula
+[ ] 14.3 Brew install path:
+            brew tap <owner>/finna
+            brew install finna
+[ ] 14.4 Formula includes shell completions + man pages
+[ ] 14.5 Version embedded via -ldflags "-X internal/version.Version=..."
+[ ] 14.6 Tag v0.1.0; verify `brew install` end-to-end on clean mac
+
+================================================================================
+PHASE 15 — Docs
+================================================================================
+[ ] 15.1 README: install, quickstart (login → context → first dashboard)
+[ ] 15.2 `docs/commands/*.md` autogen from cobra
+[ ] 15.3 GIF/asciinema of `finna dashboard --watch` + `finna runs watch`
+[ ] 15.4 CONTRIBUTING.md; how to regen client when openapi.yaml changes
+
+================================================================================
+OPEN QUESTIONS (resolve during PHASE 0–1)
+================================================================================
+- Exact GKE prod URL → bake as default `prod` context.
+- Does /api/v1/auth/login return refresh_token, or only access_token? Confirm
+  schema in openapi.yaml before designing refresh logic (Phase 3.4).
+- Logs endpoint: is it streaming (SSE/chunked) or snapshot? If snapshot,
+  --follow = poll loop w/ cursor.
+- Multi-tenant: any header like X-Tenant required? If yes, add to context.
+
+================================================================================
+MILESTONE CUTLINES
+================================================================================
+v0.1.0 (MVP):     Phases 0,1,2,3 (login only), 4, 5, 6 (no logs streaming),
+                  7.1+7.3, 11.3, 12.1–12.4, 13.1–13.3, 14.
+v0.2.0:           full Phase 6 (logs, watch), Phase 7 charts, Phase 8 dashboard.
+v0.3.0:           Phases 9, 10, OIDC/GitHub login, signed releases.

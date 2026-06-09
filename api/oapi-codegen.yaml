@@ -1,0 +1,7 @@
+package: openapi
+generate:
+  models: true
+  client: true
+  std-http-server: false
+output-options:
+  skip-prune: true

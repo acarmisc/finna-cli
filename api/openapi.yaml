@@ -1,0 +1,2947 @@
+openapi: 3.0.3
+info:
+  title: Finna FinOps API
+  version: 0.7.0
+  description: 'The Finna FinOps API is the backend for the Finna cloud cost management platform. It handles multi-cloud cost
+    ingestion (Azure Cost Management, GCP Billing, LLM usage), resource wastage detection, alert management, and per-project
+    FinOps dashboards. Extracted cost records are normalised into a unified schema and made available through a rich query
+    layer with time-window shortcuts (`mtd`, `7d`, `30d`, `90d`), provider filters, and CSV export.
+
+
+    Authentication supports three flows: username/password JWT (primary), GitHub OAuth (developer login), and pluggable OIDC
+    providers with PKCE and auto-provisioning. All resource endpoints require a valid JWT Bearer token. Admin-only endpoints
+    (auth provider CRUD) require an `is_admin` claim in the token.
+
+
+    This repository contains the API-only backend. The React/TypeScript UI lives in a separate repo and communicates exclusively
+    through this API.'
+  contact:
+    name: Finna Team
+    email: andrea.carmisciano@abstract.it
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+paths:
+  /health:
+    get:
+      summary: Basic liveness check
+      description: 'Returns `{"status": "ok"}` with a timestamp. Use for simple uptime monitoring; no database check is performed.'
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Health Health Get
+      tags:
+      - Health
+  /healthz:
+    get:
+      summary: Kubernetes-style liveness probe
+      description: Returns API name and a mocked database status. Intended for k8s liveness probes.
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Healthz Healthz Get
+      tags:
+      - Health
+  /api/v1/health:
+    get:
+      summary: Extended health check with database probe
+      description: Runs a `SELECT 1` against the database and returns `200 OK` if healthy or `503` if the database is unreachable.
+        Suitable for readiness probes.
+      operationId: api_health_api_v1_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      tags:
+      - Health
+  /api/v1/db/stats:
+    get:
+      summary: Database connection pool statistics
+      description: Returns current connection pool metrics (pool size, idle/busy connections). Useful for operational monitoring;
+        requires no authentication.
+      operationId: db_stats_api_v1_db_stats_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      tags:
+      - Health
+  /api/v1/config:
+    get:
+      tags:
+      - Config
+      summary: List cloud credential configs
+      operationId: list_configs_api_v1_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/CloudConfigResponse'
+                type: array
+                title: Response List Configs Api V1 Config Get
+      security:
+      - OAuth2PasswordBearer: []
+      description: Returns all cloud provider credential configurations. Sensitive fields (`client_secret`, `key_file_content`)
+        are redacted. Configs are decrypted from storage before masking.
+    post:
+      tags:
+      - Config
+      summary: Create cloud credential config
+      operationId: create_config_api_v1_config_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudConfigCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+      description: Stores a new cloud credential entry (provider, credential type, config blob) encrypted at rest. Returns
+        the created record with secrets masked.
+  /api/v1/config/projects:
+    get:
+      tags:
+      - Config
+      summary: List projects with MTD cost
+      description: Returns all `fin_projects` entries joined with cost records for the requested time window. The `mtd` field
+        is the sum of costs in the period, defaulting to month-to-date.
+      operationId: list_projects_api_v1_config_projects_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Start date in ISO format
+          title: Start Date
+        description: Start date in ISO format
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: End date in ISO format
+          title: End Date
+        description: End date in ISO format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Projects Api V1 Config Projects Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Config
+      summary: Create project
+      description: Creates a new FinOps project entry. Slug is auto-derived from the name if not provided. Used to track cost
+        centre attribution.
+      operationId: create_project_api_v1_config_projects_post
+      security:
+      - OAuth2PasswordBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Data
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Project Api V1 Config Projects Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/config/projects/{slug}:
+    get:
+      tags:
+      - Config
+      summary: Get project by slug
+      description: Fetches a single project by its slug, joined with cost records for the requested window.
+      operationId: get_project_api_v1_config_projects__slug__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Slug
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Start date in ISO format
+          title: Start Date
+        description: Start date in ISO format
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: End date in ISO format
+          title: End Date
+        description: End date in ISO format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Project Api V1 Config Projects  Slug  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Config
+      summary: Delete project
+      description: Removes a project entry by slug. Cost records referencing this project's slug are not deleted.
+      operationId: delete_project_api_v1_config_projects__slug__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Slug
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/config/{config_id}/test:
+    post:
+      tags:
+      - Config
+      summary: Test cloud credentials
+      description: Verifies that the stored credentials can authenticate and access the cloud API. For Azure, performs a Cost
+        Management query against the configured subscription scope. For GCP, refreshes ADC credentials.
+      operationId: test_config_api_v1_config__config_id__test_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Test Config Api V1 Config  Config Id  Test Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/config/{config_id}:
+    get:
+      tags:
+      - Config
+      summary: Get cloud credential config by ID
+      operationId: get_config_api_v1_config__config_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      description: Fetches a single credential config. Provider-specific fields (`tenant_id`, `subscription_id`, `project_id`)
+        are surfaced as top-level response fields for convenience.
+    put:
+      tags:
+      - Config
+      summary: Update cloud credential config
+      operationId: update_config_api_v1_config__config_id__put
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudConfigUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      description: Partial update of name, credential type, or config blob. Config changes are re-encrypted. Returns the updated
+        record.
+    delete:
+      tags:
+      - Config
+      summary: Delete cloud credential config
+      operationId: delete_config_api_v1_config__config_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      description: Removes the credential config. Does not cascade to associated extractors.
+  /api/v1/configs:
+    get:
+      tags:
+      - Config
+      summary: CLI-compatible config list
+      description: Alias of `GET /config` returning a paginated wrapper object (`data`, `total`, `page`). Intended for the
+        Finna CLI tool.
+      operationId: cli_config_list_api_v1_configs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Cli Config List Api V1 Configs Get
+      security:
+      - OAuth2PasswordBearer: []
+    post:
+      tags:
+      - Config
+      summary: CLI-compatible config create
+      description: Simplified config create for the CLI. Accepts `provider`, `service_category`, `region`, and `cloud_config`
+        fields.
+      operationId: cli_configs_create_api_v1_configs_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_ConfigCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Cli Configs Create Api V1 Configs Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/configs/{config_id}:
+    get:
+      tags:
+      - Config
+      summary: CLI-compatible config get
+      description: Alias of `GET /config/{config_id}` returning a flat object with `service_category` and `region` fields.
+      operationId: cli_config_get_api_v1_configs__config_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cli Config Get Api V1 Configs  Config Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Config
+      summary: CLI-compatible config update
+      description: Simplified config update for the CLI.
+      operationId: cli_configs_update_api_v1_configs__config_id__put
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/_ConfigCreate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cli Configs Update Api V1 Configs  Config Id  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Config
+      summary: CLI-compatible config delete
+      description: Deletes a config entry. Returns 404 if not found.
+      operationId: cli_configs_delete_api_v1_configs__config_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: config_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Config Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors:
+    get:
+      tags:
+      - Extractors
+      summary: List extractor registry
+      description: Returns registered extractors joined with their associated cloud credential config name. Supports provider
+        filtering and pagination.
+      operationId: list_extractors_api_v1_extractors_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Provider
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Extractor list
+          content:
+            application/json:
+              example:
+                data:
+                - id: e1
+                  name: Azure Billing
+                  provider: azure
+                  config_id: cfg-1
+                  config_name: My Azure SP
+                  enabled: true
+                  schedule: 0 2 * * *
+                  last_run: '2026-06-07T02:00:00'
+                  status: idle
+                count: 1
+                total: 1
+                page: 1
+                page_size: 50
+                has_next: false
+                has_prev: false
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Extractors
+      summary: Register new extractor
+      description: Creates a new extractor registry entry linking a provider, a cloud credential config, and a cron schedule.
+      operationId: create_extractor_api_v1_extractors_post
+      security:
+      - OAuth2PasswordBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              title: Data
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Create Extractor Api V1 Extractors Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors/runs:
+    get:
+      tags:
+      - Extractors
+      summary: List extractor runs
+      description: Returns recent extractor run records, optionally filtered by provider. Includes status, log output length,
+        and timestamps.
+      operationId: list_extractor_runs_api_v1_extractors_runs_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Provider
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Extractor Runs Api V1 Extractors Runs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors/runs/{run_id}:
+    get:
+      tags:
+      - Extractors
+      summary: Get extractor run status
+      description: Fetches the current status and metadata of a specific run. Returns 404 if the run ID is unknown.
+      operationId: get_extractor_run_api_v1_extractors_runs__run_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Extractor Run Api V1 Extractors Runs  Run Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors/runs/{run_id}/cancel:
+    post:
+      tags:
+      - Extractors
+      summary: Cancel extractor run
+      description: Attempts to cancel an in-progress run. Returns 404 if the run is not found or has already finished.
+      operationId: cancel_extractor_run_api_v1_extractors_runs__run_id__cancel_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cancel Extractor Run Api V1 Extractors Runs  Run Id  Cancel Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors/runs/{run_id}/logs:
+    get:
+      tags:
+      - Extractors
+      summary: Get extractor run logs
+      description: Returns the sanitised log output for a run as an array of lines. Useful for debugging extraction failures.
+      operationId: get_extractor_run_logs_api_v1_extractors_runs__run_id__logs_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Extractor Run Logs Api V1 Extractors Runs  Run Id  Logs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/extractors/run:
+    post:
+      tags:
+      - Extractors
+      summary: Trigger extractor run (legacy)
+      description: Legacy endpoint that starts an extractor run by `config_id`. Prefer the registry-based flow. Requires `config_id`
+        in the request body.
+      operationId: run_extractor_via_post_api_v1_extractors_run_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Data
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Run Extractor Via Post Api V1 Extractors Run Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/extractors/{extractor_id}:
+    get:
+      tags:
+      - Extractors
+      summary: Get extractor by ID
+      description: Fetches a single extractor registry entry. Returns 404 if not found.
+      operationId: get_extractor_api_v1_extractors__extractor_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: extractor_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Extractor Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Extractor Api V1 Extractors  Extractor Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Extractors
+      summary: Delete extractor
+      description: Removes the extractor from the registry. In-flight runs are not affected.
+      operationId: delete_extractor_api_v1_extractors__extractor_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: extractor_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Extractor Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/token:
+    post:
+      tags:
+      - Auth
+      summary: Authenticate and obtain JWT
+      description: Validates username and bcrypt-hashed password against `auth_users`. Returns a signed JWT Bearer token on
+        success. Rate-limited to prevent brute force.
+      operationId: login_token_api_v1_auth_token_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Login Token Api V1 Auth Token Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-examples:
+        application/json:
+          summary: Successful login
+          value:
+            token: eyJhbGciOiJIUzI1NiJ9...
+  /api/v1/auth/github:
+    get:
+      tags:
+      - Auth
+      summary: Get GitHub OAuth redirect URL
+      description: 'Returns the GitHub authorization URL to redirect the user to. Requires `GITHUB_CLIENT_ID` to be configured;
+        returns `{"url": null}` otherwise.'
+      operationId: github_redirect_api_v1_auth_github_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Github Redirect Api V1 Auth Github Get
+  /api/v1/auth/github/callback:
+    post:
+      tags:
+      - Auth
+      summary: Exchange GitHub OAuth code for JWT
+      description: Receives the OAuth `code` from the GitHub callback, exchanges it for a GitHub access token, fetches the
+        user profile, and either provisions a new user or logs in an existing one. Rate-limited.
+      operationId: github_callback_api_v1_auth_github_callback_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitHubCallbackRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Github Callback Api V1 Auth Github Callback Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/gcp/register:
+    post:
+      tags:
+      - Auth
+      summary: Register GCP service account credentials
+      description: Stores a GCP project ID and optional service account key (base64-encoded) in `cloud_config`. Requires authentication.
+      operationId: register_gcp_api_v1_auth_gcp_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GCPRegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Register Gcp Api V1 Auth Gcp Register Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/azure/service-account:
+    post:
+      tags:
+      - Auth
+      summary: Register Azure service principal credentials
+      description: Stores Azure tenant ID, client ID, optional client secret, and optional subscription ID in `cloud_config`.
+        Requires authentication.
+      operationId: register_azure_service_account_api_v1_auth_azure_service_account_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AzureServiceAccountRegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Register Azure Service Account Api V1 Auth Azure Service Account Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/login:
+    post:
+      tags:
+      - Auth
+      summary: CLI-compatible login (returns access_token field)
+      description: 'Alias of `/auth/token` that wraps the response in `{"access_token": ..., "token_type": "bearer"}` for
+        OAuth2 client compatibility.'
+      operationId: login_alias_api_v1_auth_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Login Alias Api V1 Auth Login Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/providers:
+    get:
+      tags:
+      - Auth Providers
+      summary: List OIDC providers (admin)
+      description: Returns all configured OIDC providers with `client_secret` and key material redacted. Requires `is_admin`
+        claim.
+      operationId: list_providers_api_v1_auth_providers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/AuthProviderResponse'
+                type: array
+                title: Response List Providers Api V1 Auth Providers Get
+      security:
+      - OAuth2PasswordBearer: []
+    post:
+      tags:
+      - Auth Providers
+      summary: Create OIDC provider (admin)
+      description: Creates a new OIDC provider configuration. Config is encrypted at rest. Requires `is_admin` claim. Returns
+        409 if the name already exists.
+      operationId: create_provider_api_v1_auth_providers_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthProviderInput'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthProviderResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/providers/{provider_id}:
+    get:
+      tags:
+      - Auth Providers
+      summary: Get OIDC provider by ID (admin)
+      description: Fetches a single OIDC provider with secrets masked. Requires `is_admin` claim.
+      operationId: get_provider_api_v1_auth_providers__provider_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthProviderResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Auth Providers
+      summary: Update OIDC provider (admin)
+      description: Replaces an OIDC provider configuration. Config is re-encrypted. Requires `is_admin` claim.
+      operationId: update_provider_api_v1_auth_providers__provider_id__put
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthProviderInput'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthProviderResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Auth Providers
+      summary: Delete OIDC provider (admin)
+      description: Deletes a provider. Returns 409 if any users are still linked to it.
+      operationId: delete_provider_api_v1_auth_providers__provider_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Delete Provider Api V1 Auth Providers  Provider Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/providers/{provider_id}/test:
+    post:
+      tags:
+      - Auth Providers
+      summary: Test OIDC provider connectivity (admin)
+      description: Performs an OIDC discovery and JWKS fetch against the provider's issuer URL to verify accessibility. Records
+        the test result timestamp and outcome in the database.
+      operationId: test_provider_api_v1_auth_providers__provider_id__test_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Provider Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Test Provider Api V1 Auth Providers  Provider Id  Test Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/oidc/providers:
+    get:
+      tags:
+      - OIDC
+      summary: List enabled OIDC providers (public)
+      description: Returns publicly-safe provider info (id, name, issuer, enabled) for building login buttons in the UI. No
+        authentication required.
+      operationId: list_enabled_providers_api_v1_auth_oidc_providers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ProviderPublic'
+                type: array
+                title: Response List Enabled Providers Api V1 Auth Oidc Providers Get
+  /api/v1/auth/oidc/login:
+    post:
+      tags:
+      - OIDC
+      summary: Initiate OIDC login with PKCE
+      description: Generates a PKCE code challenge, state, and nonce, then returns the provider's authorization URL. State
+        is stored server-side for callback validation. Rate-limited per IP.
+      operationId: oidc_login_api_v1_auth_oidc_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCLoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCLoginResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/oidc/callback:
+    post:
+      tags:
+      - OIDC
+      summary: Complete OIDC callback and issue JWT
+      description: Validates the OIDC state, exchanges the authorization code for tokens, verifies the ID token, applies claim
+        mappings, and provisions or updates the local user. Issues a Finna JWT on success. Auto-provisioning is governed by
+        the provider config flag.
+      operationId: oidc_callback_api_v1_auth_oidc_callback_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OIDCCallbackRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OIDCCallbackResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs:
+    get:
+      tags:
+      - Costs
+      summary: List cost records
+      description: Queries normalised cost records with optional filters for provider, project, and date range. Supports time-window
+        shortcuts (`mtd`, `7d`, `30d`, `90d`). Returns paginated results alongside per-provider totals. Requires Bearer token
+        authentication.
+      operationId: list_costs_api_v1_costs_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Filter by provider: gcp, azure, llm'
+          title: Provider
+        description: 'Filter by provider: gcp, azure, llm'
+      - name: project
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Filter by project name
+          title: Project
+        description: Filter by project name
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          description: Start date in ISO format
+          title: Start Date
+        description: Start date in ISO format
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          description: End date in ISO format
+          title: End Date
+        description: End date in ISO format
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Cost records with pagination metadata and provider totals
+          content:
+            application/json:
+              example:
+                costs:
+                - id: abc123
+                  prov: azure
+                  project_id: proj-1
+                  name: Project Alpha
+                  sku: Virtual Machines
+                  mtd: 142.5
+                  delta: 0.0
+                  prev: 0.0
+                  tags: {}
+                  date: '2026-06-01T00:00:00'
+                totals:
+                  azure: 142.5
+                total: 1
+                page: 1
+                page_size: 50
+                has_next: false
+                has_prev: false
+                window: mtd
+                startDate: '2026-06-01T00:00:00'
+                endDate: '2026-06-08T12:00:00'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/export:
+    get:
+      tags:
+      - Costs
+      summary: Export cost records as CSV
+      description: Streams cost records as a CSV file (`costs.csv`). Supports the same provider/project/date filters as `GET
+        /costs`. Up to 10 000 rows.
+      operationId: export_costs_api_v1_costs_export_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Provider
+      - name: project
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Project
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: End Date
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/totals:
+    get:
+      tags:
+      - Costs
+      summary: Get aggregated cost totals by provider
+      description: Returns per-provider totals for the current window plus the equivalent previous period, enabling delta
+        percentage calculations for trend widgets.
+      operationId: get_cost_totals_api_v1_costs_totals_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: End Date
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      responses:
+        '200':
+          description: Cost totals with current/previous period comparison
+          content:
+            application/json:
+              example:
+                totals:
+                  azure:
+                    mtd: 500.0
+                    prev: 450.0
+                    delta: 11.1
+                  gcp:
+                    mtd: 200.0
+                    prev: 180.0
+                    delta: 11.1
+                  total:
+                    mtd: 700.0
+                    prev: 630.0
+                    delta: 11.1
+                window: mtd
+                startDate: '2026-06-01T00:00:00'
+                endDate: '2026-06-08T12:00:00'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/by-sku:
+    get:
+      tags:
+      - Costs
+      summary: Get costs aggregated by SKU
+      description: Aggregates cost records by service name (SKU), optionally filtered by provider and project. Returns top
+        N SKUs sorted by cost descending.
+      operationId: get_costs_by_sku_api_v1_costs_by_sku_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Provider
+      - name: project
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Filter by project name
+          title: Project
+        description: Filter by project name
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Costs By Sku Api V1 Costs By Sku Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/daily:
+    get:
+      tags:
+      - Costs
+      summary: Get daily cost breakdown
+      description: Returns daily cost series grouped by provider, suitable for area/line charts. Each entry has a `date` plus
+        per-provider amount fields.
+      operationId: get_daily_costs_api_v1_costs_daily_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: End Date
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          title: Provider
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Daily Costs Api V1 Costs Daily Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/summary:
+    get:
+      tags:
+      - Costs
+      summary: CLI-compatible cost summary
+      description: Returns aggregate totals by provider for the requested window as `by_provider` and `by_service` maps. Designed
+        for CLI output tables.
+      operationId: cost_summary_api_v1_costs_summary_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: End Date
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cost Summary Api V1 Costs Summary Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/breakdown:
+    get:
+      tags:
+      - Costs
+      summary: CLI-compatible cost breakdown by SKU
+      description: Returns cost aggregated by `service_name` (SKU) for the requested window. Intended for CLI breakdown views.
+      operationId: cost_breakdown_api_v1_costs_breakdown_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+          title: End Date
+      - name: window
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time window: mtd, 7d, 30d, 90d'
+          title: Window
+        description: 'Time window: mtd, 7d, 30d, 90d'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cost Breakdown Api V1 Costs Breakdown Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/costs/skus:
+    get:
+      tags:
+      - Costs
+      summary: List distinct SKUs for a provider
+      description: Returns all distinct `service_name` values for the given provider. Useful for populating filter dropdowns
+        in the UI.
+      operationId: get_skus_by_provider_api_v1_costs_skus_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+          description: 'Cloud provider: azure, gcp, llm'
+          title: Provider
+        description: 'Cloud provider: azure, gcp, llm'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Skus By Provider Api V1 Costs Skus Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/dashboard/stats:
+    get:
+      tags:
+      - Dashboard
+      summary: Aggregated dashboard statistics
+      description: Single endpoint for the main dashboard view. Returns provider cost totals (azure/gcp/llm), a daily cost
+        series for chart rendering, and alert statistics (by status and severity). All in one round-trip.
+      operationId: dashboard_stats_api_v1_dashboard_stats_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: range
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Time range: mtd, 7d, 30d, 90d'
+          title: Range
+        description: 'Time range: mtd, 7d, 30d, 90d'
+      responses:
+        '200':
+          description: Combined dashboard stats
+          content:
+            application/json:
+              example:
+                totals:
+                  azure: 500.0
+                  gcp: 200.0
+                  llm: 50.0
+                  total: 750.0
+                daily:
+                - date: '2026-06-07'
+                  azure: 20.5
+                  gcp: 8.0
+                  llm: 2.0
+                alertStats:
+                  firing: 3
+                  ack: 1
+                  resolved: 12
+                  by_severity:
+                    err: 2
+                    warn: 2
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/alerts:
+    get:
+      tags:
+      - Alerts
+      summary: List alerts
+      description: Returns alerts filtered by status and/or severity. Supports pagination via `page`/`page_size`. Also returns
+        a `data` wrapper for CLI compatibility.
+      operationId: list_alerts_api_v1_alerts_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Filter by status: firing, resolved, all'
+          title: Status
+        description: 'Filter by status: firing, resolved, all'
+      - name: severity
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: 'Filter by severity: err, warn, ok'
+          title: Severity
+        description: 'Filter by severity: err, warn, ok'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          default: 50
+          title: Limit
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Alert list with pagination
+          content:
+            application/json:
+              example:
+                alerts:
+                - id: a1
+                  status: firing
+                  severity: err
+                  description: Budget threshold exceeded
+                  rule: budget-alert
+                  project: proj-1
+                  cost_impact: 50.0
+                  provider: azure
+                  is_acknowledged: false
+                  triggered_at: '2026-06-07T10:00:00'
+                  first_seen: '2026-06-07T10:00:00'
+                  last_seen: '2026-06-07T10:00:00'
+                count: 1
+                total: 1
+                page: 1
+                page_size: 50
+                has_next: false
+                has_prev: false
+          headers:
+              Link:
+                schema:
+                  type: object
+                  properties:
+                    next:
+                      type: string
+                      description: Link to next page
+                    prev:
+                      type: string
+                      description: Link to previous page
+                    first:
+                      type: string
+                      description: Link to first page
+                    last:
+                      type: string
+                      description: Link to last page
+                description: Pagination links following RFC 5988
+              X-Total-Count:
+                schema:
+                  type: integer
+                description: Total number of items across all pages
+              X-Page:
+                schema:
+                  type: integer
+                description: Current page number
+              X-Page-Count:
+                schema:
+                  type: integer
+                description: Total number of pages
+              X-Limit:
+                schema:
+                  type: integer
+                description: Maximum number of items per page
+        '404':
+          description: Resource not found
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                properties:
+                  detail:
+                    type: string
+                    example: Resource not found
+              example:
+                detail: Resource not found
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                - errors
+                properties:
+                  detail:
+                    type: string
+                    example: Validation error
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                    example:
+                    - loc:
+                      - body
+                      - field
+                      msg: field required
+  /api/v1/alerts/stats:
+    get:
+      tags:
+      - Alerts
+      summary: Get alert statistics
+      description: Returns counts grouped by status (firing/ack/resolved) and severity (critical/warning/info). Use for summary
+        cards.
+      operationId: get_alert_stats_api_v1_alerts_stats_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Alert Stats Api V1 Alerts Stats Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/alerts/active:
+    get:
+      tags:
+      - Alerts
+      summary: List active firing alerts
+      description: Returns only alerts with `status = firing` and `acknowledged_at IS NULL`. Suitable for notification badges.
+      operationId: get_active_alerts_api_v1_alerts_active_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Active Alerts Api V1 Alerts Active Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/alerts/{alert_id}/acknowledge:
+    post:
+      tags:
+      - Alerts
+      summary: Acknowledge an alert
+      description: Sets alert status to `ack` and records the acknowledging user and timestamp. Returns 404 if the alert is
+        not found or already acknowledged.
+      operationId: acknowledge_alert_api_v1_alerts__alert_id__acknowledge_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: alert_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Alert Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Acknowledge Alert Api V1 Alerts  Alert Id  Acknowledge Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/alerts/acknowledge-all:
+    post:
+      tags:
+      - Alerts
+      summary: Bulk acknowledge all firing alerts
+      description: Acknowledges all currently firing and unacknowledged alerts in a single operation. Returns the count and
+        IDs of acknowledged alerts.
+      operationId: acknowledge_all_alerts_api_v1_alerts_acknowledge_all_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Acknowledge All Alerts Api V1 Alerts Acknowledge All Post
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/wastage:
+    get:
+      tags:
+      - Wastage
+      summary: List wastage findings
+      description: Returns resource wastage findings filtered by provider, severity, rule ID, status, or account ID. Uses
+        offset-based pagination (`limit`/`offset`).
+      operationId: list_findings_api_v1_wastage_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: provider
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Filter by cloud provider
+          title: Provider
+        description: Filter by cloud provider
+      - name: severity
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: critical | high | medium | low | info
+          title: Severity
+        description: critical | high | medium | low | info
+      - name: rule_id
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Filter by rule ID
+          title: Rule Id
+        description: Filter by rule ID
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: open | acked | resolved | ignored
+          title: Status
+        description: open | acked | resolved | ignored
+      - name: account_id
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+          description: Filter by cloud account/subscription ID
+          title: Account Id
+        description: Filter by cloud account/subscription ID
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Wastage findings with pagination
+          content:
+            application/json:
+              example:
+                data:
+                - id: f1
+                  provider: azure
+                  rule_id: idle-vm
+                  severity: high
+                  status: open
+                  estimated_monthly_usd: 120.0
+                  resource_id: /subscriptions/.../virtualMachines/myVM
+                  category: compute
+                  first_seen_at: '2026-06-01T00:00:00'
+                  last_seen_at: '2026-06-08T00:00:00'
+                total: 1
+                limit: 50
+                offset: 0
+                has_next: false
+                has_prev: false
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                - errors
+                properties:
+                  detail:
+                    type: string
+                    example: Validation error
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                    example:
+                    - loc:
+                      - body
+                      - field
+                      msg: field required
+  /api/v1/wastage/summary:
+    get:
+      tags:
+      - Wastage
+      summary: Get wastage summary by category
+      description: Aggregates findings by category with summed estimated monthly savings. Useful for the wastage overview
+        card.
+      operationId: wastage_summary_api_v1_wastage_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Wastage Summary Api V1 Wastage Summary Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/wastage/rules:
+    get:
+      tags:
+      - Wastage
+      summary: List wastage rule catalog
+      description: Returns all registered detection rules with their ID, severity, category, and description. Returns an empty
+        list if the rules module is not yet available.
+      operationId: list_rules_api_v1_wastage_rules_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response List Rules Api V1 Wastage Rules Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/wastage/scans:
+    get:
+      tags:
+      - Wastage
+      summary: List recent wastage scan runs
+      description: Returns the most recent scan run records up to `limit`. Each entry includes start/finish timestamps and
+        status.
+      operationId: list_scans_api_v1_wastage_scans_get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Scans Api V1 Wastage Scans Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/wastage/{finding_id}:
+    get:
+      tags:
+      - Wastage
+      summary: Get wastage finding by ID
+      description: Fetches a single finding. Returns 404 if not found.
+      operationId: get_finding_api_v1_wastage__finding_id__get
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: finding_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Finding Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Finding Api V1 Wastage  Finding Id  Get
+        '404':
+          description: Resource not found
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                properties:
+                  detail:
+                    type: string
+                    example: Resource not found
+              example:
+                detail: Resource not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/wastage/{finding_id}/ack:
+    post:
+      tags:
+      - Wastage
+      summary: Acknowledge wastage finding
+      description: Transitions finding status from `open` to `acked`. Returns 404 if not found.
+      operationId: ack_finding_api_v1_wastage__finding_id__ack_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: finding_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Finding Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ack Finding Api V1 Wastage  Finding Id  Ack Post
+        '404':
+          description: Resource not found
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                properties:
+                  detail:
+                    type: string
+                    example: Resource not found
+              example:
+                detail: Resource not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/wastage/{finding_id}/resolve:
+    post:
+      tags:
+      - Wastage
+      summary: Mark wastage finding as resolved
+      description: Transitions finding status to `resolved`. Returns 404 if not found.
+      operationId: resolve_finding_api_v1_wastage__finding_id__resolve_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: finding_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Finding Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Resolve Finding Api V1 Wastage  Finding Id  Resolve Post
+        '404':
+          description: Resource not found
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                properties:
+                  detail:
+                    type: string
+                    example: Resource not found
+              example:
+                detail: Resource not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/wastage/{finding_id}/ignore:
+    post:
+      tags:
+      - Wastage
+      summary: Ignore wastage finding
+      description: Transitions finding status to `ignored` and stores the provided `reason` in the finding's tags. Returns
+        404 if not found.
+      operationId: ignore_finding_api_v1_wastage__finding_id__ignore_post
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: finding_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Finding Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IgnoreBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ignore Finding Api V1 Wastage  Finding Id  Ignore Post
+        '404':
+          description: Resource not found
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - detail
+                properties:
+                  detail:
+                    type: string
+                    example: Resource not found
+              example:
+                detail: Resource not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/wastage/scan:
+    post:
+      tags:
+      - Wastage
+      summary: Trigger wastage scan
+      description: Enqueues a new wastage scan run for the specified provider. Returns 503 if the wastage runner module is
+        not yet available.
+      operationId: trigger_scan_api_v1_wastage_scan_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScanBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Trigger Scan Api V1 Wastage Scan Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - OAuth2PasswordBearer: []
+components:
+  schemas:
+    AuthProviderConfig:
+      properties:
+        issuer:
+          type: string
+          title: Issuer
+        client_id:
+          type: string
+          title: Client Id
+        client_secret:
+          type: string
+          title: Client Secret
+        redirect_uri:
+          type: string
+          title: Redirect Uri
+        scopes:
+          items:
+            type: string
+          type: array
+          title: Scopes
+        claim_mappings:
+          additionalProperties: true
+          type: object
+          title: Claim Mappings
+        auto_provision:
+          type: boolean
+          title: Auto Provision
+          default: false
+        allowed_email_domains:
+          items:
+            type: string
+          type: array
+          title: Allowed Email Domains
+      type: object
+      required:
+      - issuer
+      - client_id
+      - client_secret
+      - redirect_uri
+      title: AuthProviderConfig
+      description: OIDC provider configuration schema.
+    AuthProviderInput:
+      properties:
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          title: Kind
+          default: oidc
+        enabled:
+          type: boolean
+          title: Enabled
+          default: false
+        config:
+          $ref: '#/components/schemas/AuthProviderConfig'
+      type: object
+      required:
+      - name
+      - config
+      title: AuthProviderInput
+      description: Create/update provider request.
+    AuthProviderResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          title: Kind
+        enabled:
+          type: boolean
+          title: Enabled
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+        created_at:
+          type: string
+          nullable: true
+          title: Created At
+        updated_at:
+          type: string
+          nullable: true
+          title: Updated At
+        created_by:
+          type: string
+          nullable: true
+          title: Created By
+        last_test_at:
+          type: string
+          nullable: true
+          title: Last Test At
+        last_test_ok:
+          type: boolean
+          nullable: true
+          title: Last Test Ok
+      type: object
+      required:
+      - id
+      - name
+      - kind
+      - enabled
+      - config
+      title: AuthProviderResponse
+      description: Provider response (secrets masked).
+    AzureServiceAccountRegisterRequest:
+      properties:
+        tenant_id:
+          type: string
+          title: Tenant Id
+        client_id:
+          type: string
+          title: Client Id
+        client_secret:
+          type: string
+          nullable: true
+          title: Client Secret
+        subscription_id:
+          type: string
+          nullable: true
+          title: Subscription Id
+      type: object
+      required:
+      - tenant_id
+      - client_id
+      title: AzureServiceAccountRegisterRequest
+    CloudConfigCreate:
+      properties:
+        provider:
+          $ref: '#/components/schemas/Provider'
+        name:
+          type: string
+          title: Name
+          description: Human-readable name
+        credential_type:
+          $ref: '#/components/schemas/CredentialType'
+          description: Authentication method
+          default: service_principal
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+          description: Provider-specific config
+      type: object
+      required:
+      - provider
+      - name
+      - config
+      title: CloudConfigCreate
+      description: Request schema for creating a cloud configuration.
+    CloudConfigResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        provider:
+          type: string
+          title: Provider
+        name:
+          type: string
+          title: Name
+        credential_type:
+          type: string
+          title: Credential Type
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        last_test:
+          type: string
+          nullable: true
+          title: Last Test
+        last_test_at:
+          type: string
+          format: date-time
+          nullable: true
+          title: Last Test At
+        tenant_id:
+          type: string
+          nullable: true
+          title: Tenant Id
+        subscription_id:
+          type: string
+          nullable: true
+          title: Subscription Id
+        project_id:
+          type: string
+          nullable: true
+          title: Project Id
+        err:
+          type: string
+          nullable: true
+          title: Err
+      type: object
+      required:
+      - id
+      - provider
+      - name
+      - credential_type
+      - config
+      - created_at
+      - updated_at
+      title: CloudConfigResponse
+      description: Response schema for cloud configuration.
+    CloudConfigUpdate:
+      properties:
+        name:
+          type: string
+          nullable: true
+          title: Name
+        credential_type:
+          $ref: '#/components/schemas/CredentialType'
+          nullable: true
+        config:
+          additionalProperties: true
+          type: object
+          nullable: true
+          title: Config
+      type: object
+      title: CloudConfigUpdate
+      description: Request schema for updating a cloud configuration.
+    CredentialType:
+      type: string
+      enum:
+      - service_principal
+      - managed_identity
+      - cli
+      - device_code
+      title: CredentialType
+    GCPRegisterRequest:
+      properties:
+        project_id:
+          type: string
+          title: Project Id
+        key_file_content:
+          type: string
+          nullable: true
+          title: Key File Content
+      type: object
+      required:
+      - project_id
+      title: GCPRegisterRequest
+    GitHubCallbackRequest:
+      properties:
+        code:
+          type: string
+          title: Code
+      type: object
+      required:
+      - code
+      title: GitHubCallbackRequest
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    IgnoreBody:
+      properties:
+        reason:
+          type: string
+          title: Reason
+          default: ''
+      type: object
+      title: IgnoreBody
+    OIDCCallbackRequest:
+      properties:
+        provider_id:
+          type: string
+          title: Provider Id
+        code:
+          type: string
+          title: Code
+        state:
+          type: string
+          title: State
+      type: object
+      required:
+      - provider_id
+      - code
+      - state
+      title: OIDCCallbackRequest
+      description: Callback request.
+    OIDCCallbackResponse:
+      properties:
+        token:
+          type: string
+          title: Token
+        user_id:
+          type: integer
+          title: User Id
+        username:
+          type: string
+          title: Username
+      type: object
+      required:
+      - token
+      - user_id
+      - username
+      title: OIDCCallbackResponse
+      description: Callback response.
+    OIDCLoginRequest:
+      properties:
+        provider_id:
+          type: string
+          title: Provider Id
+      type: object
+      required:
+      - provider_id
+      title: OIDCLoginRequest
+      description: Login request.
+    OIDCLoginResponse:
+      properties:
+        authorization_url:
+          type: string
+          title: Authorization Url
+        state:
+          type: string
+          title: State
+      type: object
+      required:
+      - authorization_url
+      - state
+      title: OIDCLoginResponse
+      description: Login response.
+    Provider:
+      type: string
+      enum:
+      - azure
+      - gcp
+      - llm
+      title: Provider
+    ProviderPublic:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        issuer:
+          type: string
+          title: Issuer
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - id
+      - name
+      - issuer
+      - enabled
+      title: ProviderPublic
+      description: Public provider info (no secrets).
+    ScanBody:
+      properties:
+        provider:
+          type: string
+          title: Provider
+      type: object
+      required:
+      - provider
+      title: ScanBody
+    TokenRequest:
+      properties:
+        username:
+          type: string
+          title: Username
+        password:
+          type: string
+          title: Password
+      type: object
+      required:
+      - username
+      - password
+      title: TokenRequest
+    ValidationError:
+      properties:
+        loc:
+          items:
+            type: string
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    _ConfigCreate:
+      properties:
+        provider:
+          type: string
+          title: Provider
+        cloud_config:
+          type: string
+          nullable: true
+          title: Cloud Config
+        service_category:
+          type: string
+          nullable: true
+          title: Service Category
+        region:
+          type: string
+          nullable: true
+          title: Region
+      type: object
+      required:
+      - provider
+      title: _ConfigCreate
+  securitySchemes:
+    OAuth2PasswordBearer:
+      type: oauth2
+      flows:
+        password:
+          scopes: {}
+          tokenUrl: /api/v1/auth/token
+servers:
+- url: http://localhost:8000
+  description: Local development server
+tags:
+- name: Auth
+  description: Username/password JWT login and GitHub OAuth flows.
+- name: Auth Providers
+  description: Admin CRUD for OIDC provider configurations (secrets encrypted at rest).
+- name: OIDC
+  description: OIDC login initiation, callback handling, and public provider listing.
+- name: Config
+  description: Cloud credential configurations for Azure, GCP, and LLM providers.
+- name: Costs
+  description: Cost record queries, aggregations, daily series, and CSV export.
+- name: Wastage
+  description: Resource wastage findings, scan management, and rule catalog.
+- name: Alerts
+  description: FinOps alert listing, acknowledgement, and statistics.
+- name: Extractors
+  description: Extractor registry management and run lifecycle (start, cancel, logs).
+- name: Dashboard
+  description: Aggregated dashboard stats combining costs, daily series, and alert counts.
+- name: Health
+  description: Liveness and readiness probes for load balancers and Kubernetes.
