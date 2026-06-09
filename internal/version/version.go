@@ -6,8 +6,10 @@ package version
 // builds; release builds override via ldflags.
 var Version = "dev"
 
-// Commit is the git commit SHA (optional, injected at build time).
-var Commit = ""
+// Commit is the short git commit SHA. Defaults to "none" for local builds;
+// release builds inject the real SHA via -ldflags.
+var Commit = "none"
 
-// Date is the build date (optional, injected at build time).
-var Date = ""
+// Date is the ISO-8601 build timestamp. Defaults to "unknown" for local
+// builds; release builds inject via -ldflags.
+var Date = "unknown"

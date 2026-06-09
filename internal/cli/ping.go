@@ -166,10 +166,10 @@ func newDiagVersionCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
 			fmt.Fprintf(w, "finna %s\n", version.Version)
-			if version.Commit != "" {
+			if version.Commit != "none" && version.Commit != "" {
 				fmt.Fprintf(w, "  commit: %s\n", version.Commit)
 			}
-			if version.Date != "" {
+			if version.Date != "unknown" && version.Date != "" {
 				fmt.Fprintf(w, "  built:  %s\n", version.Date)
 			}
 			fmt.Fprintf(w, "  go:     %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)

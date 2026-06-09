@@ -13,6 +13,7 @@ import (
 // OutputFormat is the user-visible output format selector.
 type OutputFormat string
 
+// Output format constants used by --output / -o.
 const (
 	FormatTable OutputFormat = "table"
 	FormatJSON  OutputFormat = "json"

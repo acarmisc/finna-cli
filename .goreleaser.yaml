@@ -1,0 +1,74 @@
+version: 2
+
+project_name: finna
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: finna
+    main: ./cmd/finna
+    binary: finna
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/acarmisc/finna-cli/internal/version.Version={{.Version}}
+      - -X github.com/acarmisc/finna-cli/internal/version.Commit={{.Commit}}
+      - -X github.com/acarmisc/finna-cli/internal/version.Date={{.Date}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - artifacts: archive
+    documents:
+      - "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json"
+
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+# NOTE: "brews" is deprecated in goreleaser v2 OSS; the replacement requires the
+# Pro-only "plugins" feature. brews still works at release time — only
+# "goreleaser check" exits non-zero on the warning. Track upstream for when a
+# free alternative lands: https://goreleaser.com/deprecations#brews
+brews:
+  - name: finna
+    repository:
+      owner: acarmisc
+      name: homebrew-finna
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/acarmisc/finna-cli"
+    description: "CLI for finna-app cloud cost management"
+    license: MIT
+    install: |
+      bin.install "finna"
+      generate_completions_from_executable(bin/"finna", "completion")
+    test: |
+      system "#{bin}/finna", "version"

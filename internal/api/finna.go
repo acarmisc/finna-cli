@@ -295,9 +295,3 @@ func (c *Client) sleepBackoff(ctx context.Context, attempt int) {
 	}
 }
 
-func (c *Client) tracef(format string, args ...any) {
-	if !c.debug || c.debugSink == nil {
-		return
-	}
-	fmt.Fprintf(c.debugSink, "[finna debug] "+format+"\n", args...)
-}
