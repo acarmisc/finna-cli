@@ -10,7 +10,7 @@ Go CLI for the [finna-app](https://github.com/acarmisc/finna-app) FinOps backend
 
 ```sh
 brew tap acarmisc/finna
-brew install finna
+brew install finna-cli
 ```
 
 ### Direct download

@@ -58,7 +58,7 @@ signs:
 # "goreleaser check" exits non-zero on the warning. Track upstream for when a
 # free alternative lands: https://goreleaser.com/deprecations#brews
 brews:
-  - name: finna
+  - name: finna-cli
     repository:
       owner: acarmisc
       name: homebrew-finna
