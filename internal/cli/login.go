@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -178,12 +180,20 @@ func loginOIDC(cmd *cobra.Command, apiClient *finnaapi.Client, ctxName, provider
 	}
 
 	// Start a one-shot loopback HTTP server to receive the callback.
-	listener, err := net.Listen("tcp", "127.0.0.1:0") //nolint:gosec // intentional loopback
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("start callback listener: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
+
+	// Generate a random nonce and embed it in the callback path so that
+	// other local processes cannot forge a callback request to this port.
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("generate callback nonce: %w", err)
+	}
+	callbackPath := "/callback/" + hex.EncodeToString(nonce[:])
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, callbackPath)
 
 	type result struct {
 		code string
@@ -194,6 +204,10 @@ func loginOIDC(cmd *cobra.Command, apiClient *finnaapi.Client, ctxName, provider
 	srv := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != callbackPath {
+				http.NotFound(w, r)
+				return
+			}
 			code := r.URL.Query().Get("code")
 			errParam := r.URL.Query().Get("error")
 			if errParam != "" {

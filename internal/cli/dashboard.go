@@ -3,12 +3,14 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	finnaapi "github.com/acarmisc/finna-cli/internal/api"
 	"github.com/acarmisc/finna-cli/internal/ui"
@@ -59,14 +61,23 @@ func runDashboard(cmd *cobra.Command, watchSecs int) error {
 	}
 
 	interval := time.Duration(watchSecs) * time.Second
+	out := cmd.OutOrStdout()
+	stdoutIsTTY := false
+	if f, ok := out.(*os.File); ok {
+		stdoutIsTTY = term.IsTerminal(int(f.Fd()))
+	}
 	for {
 		select {
 		case <-cmd.Context().Done():
 			return nil
 		case <-time.After(interval):
 		}
-		// Move cursor up to overwrite previous output.
-		fmt.Fprintf(cmd.OutOrStdout(), "\033[%dA", lineCount)
+		// Use ANSI cursor-up escape to overwrite previous render.
+		// This only works on terminals; non-TTY output skips cursor
+		// movement and appends each refresh.
+		if stdoutIsTTY {
+			cursorUp(out, lineCount)
+		}
 		lineCount, err = render()
 		if err != nil {
 			return err
@@ -276,4 +287,13 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// cursorUp emits an ANSI escape sequence to move the cursor up n lines.
+// The ANSI sequence is "\033[<n>A". It must only be used when w is a terminal.
+func cursorUp(w io.Writer, n int) {
+	if n <= 0 {
+		return
+	}
+	fmt.Fprintf(w, "\033[%dA", n)
 }

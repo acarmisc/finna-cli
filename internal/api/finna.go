@@ -2,11 +2,10 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -284,9 +283,8 @@ func FetchAll[T any](ctx context.Context, limit int, fetch func(ctx context.Cont
 func (c *Client) sleepBackoff(ctx context.Context, attempt int) {
 	// Exponential: 200ms, 400ms, 800ms ... plus up to 100ms jitter.
 	base := time.Duration(200*(1<<attempt)) * time.Millisecond
-	jitterMax := big.NewInt(100)
-	j, _ := rand.Int(rand.Reader, jitterMax)
-	d := base + time.Duration(j.Int64())*time.Millisecond
+	jitter := rand.IntN(100)
+	d := base + time.Duration(jitter)*time.Millisecond
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
